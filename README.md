@@ -11,8 +11,9 @@ Folder structure
 
 Folder names correspond to date of data generation (i.e., sequencing).
 
-| Folder name | Notebook | Experiment name (Benchling) | Description |
-| ----------- | -------- | --------------------------- | ----------- |
+<!--- Markdown table formatting notes: left align text; use underscores to indicate minimum column width (especially for GitHub display) -->
+| Folder name<br/>__________ | Notebook<br/>__________ | Experiment name (Benchling)<br/>_________________________ | Description <br/>_____________________________________________________ |
+| :----------- | :-------- | :--------------------------- | :----------- |
 | 20230717    | `20230717 HEK scBarcode.ipynb` | [2023-06-28 Split-Pool HEK Nuclei](https://benchling.com/s/etr-4FqDoTQiWpBfQlyOBYhz) | Sequencing of barcodes from serial and limiting dilutions of SPRITE Zero (concentration-doubling)-barcoded HEK nuclei |
 | 20230831 (or 20230831_barcodes) | `20230830 In vitro barcoding Nanopore.ipynb` | [2023-08-09 DPM ligation to split-pooled oligo](https://benchling.com/s/etr-XcdY7Za2GoVwcRjFEqBF) | Nanopore sequencing of gel-cut ~197 bp and ~250 bp bands of amplified, unblocked barcoded oligo (Oligo + Odd + ER + dA + DPM + Odd + Y) |
 | 20230831_scBarcode | `20230831_scBarcode.ipynb` | [2023-08-10 HEK H3K4me3 scChIP-seq](https://benchling.com/s/etr-V1QGaZkTpBrchx0XtlvM) | Sequencing of barcodes from serial dilutions of FACS-sorted singlets and clumps of SPRITE Zero (concentration-doubling)-barcoded HEK nuclei |
