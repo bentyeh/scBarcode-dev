@@ -13,8 +13,8 @@ PATH_OUTPUT="$4"
 PATH_R1="$5"
 
 splitcode -c "$PATH_CONFIG" \
-	--nFastqs=1 --assign --mod-names --x-names --no-x-out --no-outb --out-fasta -t 8 \
+	--nFastqs=1 --assign --mod-names --x-names --no-x-out --no-outb --out-fasta -t 4 \
 	--mapping="$PATH_MAPPING" --summary="$PATH_SUMMARY" --output=/dev/stdout \
 	"$PATH_R1" |
 awk '$1 ~ /^>/' |
-pigz -p 8 > "$PATH_OUTPUT"
+pigz -p 4 > "$PATH_OUTPUT"
