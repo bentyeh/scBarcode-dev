@@ -1,0 +1,527 @@
+workdir: "/central/groups/guttman/btyeh/scBarcode/data_proc/20241121"
+configfile: "config.yaml"
+
+# assumes there exist 2 conda environments
+# - one specifed by the 'conda_env' in the config file
+#   - Must contain samtools, bowtie2, trim_galore, bedtools, pysam
+#   - Example: "chipdip" environment from the ChIP-DIP pipeline
+# - "genomics"
+#   - Must contain preseq
+
+##############################################################################
+# Load required settings
+##############################################################################
+
+bowtie2_index_combined = config.get("bowtie2_index_combined")
+bowtie2_index_human = config.get("bowtie2_index_human")
+bowtie2_index_mouse = config.get("bowtie2_index_mouse")
+conda_env = config.get("conda_env")
+mask = dict(human=config.get("mask_human"), mouse=config.get("mask_mouse"))
+
+##############################################################################
+# Constants
+##############################################################################
+
+DIR_PROJECT = '/central/groups/guttman/btyeh/scBarcode'
+DIR_DATA = os.path.join(DIR_PROJECT, 'data', '20241121')
+DIR_AUX = os.path.join(DIR_PROJECT, 'data_aux', '20241121')
+DIR_PROC = os.path.join(DIR_PROJECT, 'data_proc', '20241121')
+DIR_RESULTS = os.path.join(DIR_PROJECT, 'results', '20241121')
+DIR_SCRIPTS = os.path.join(DIR_PROJECT, 'scripts', '20241121')
+
+TARGETS = ['CTCF', 'H3K4me3']
+SPECIES = ['human', 'mouse']
+ALIGNMENT_TYPES = ['R1', 'PE'] # only use read 1, or used paired-end alignment
+
+rename_and_filter_chr = os.path.join(DIR_SCRIPTS, 'rename_and_filter_chr.py')
+remove_unpaired = os.path.join(DIR_SCRIPTS, 'remove_unpaired.py')
+dedup = os.path.join(DIR_SCRIPTS, 'dedup.py')
+
+##############################################################################
+# Make output directories
+##############################################################################
+
+DIR_TRIM_R1 = os.path.join(DIR_PROC, 'trim_R1')
+DIR_TRIM_PE = os.path.join(DIR_PROC, 'trim_pe')
+DIR_LOG = os.path.join(DIR_PROC, 'log')
+
+os.makedirs(DIR_TRIM_R1, exist_ok=True)
+os.makedirs(DIR_TRIM_PE, exist_ok=True)
+os.makedirs(os.path.join(DIR_LOG, 'cluster'), exist_ok=True)
+
+##############################################################################
+# Rules
+##############################################################################
+
+BAMS = expand(
+    os.path.join(DIR_PROC, '{target}-{alignment_type}.bam'),
+    target=TARGETS,
+    alignment_type=ALIGNMENT_TYPES
+)
+
+BAMS_SPECIES_SPLIT = expand(
+    os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}.bam'),
+    target=TARGETS,
+    alignment_type=ALIGNMENT_TYPES,
+    species=SPECIES
+)
+
+BAMS_FILTERED = expand(
+    os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered.bam'),
+    target=TARGETS,
+    alignment_type=ALIGNMENT_TYPES,
+    species=SPECIES
+)
+
+BIGWIGS = expand(
+    os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup.bw'),
+    target=TARGETS,
+    alignment_type=ALIGNMENT_TYPES,
+    species=SPECIES
+)
+
+CHROM_MAPS = expand(
+    os.path.join(DIR_AUX, 'chrom_map_{species}.txt'),
+    species=SPECIES
+)
+
+BAMS_FINAL = expand(
+    os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup.bam'),
+    target=TARGETS,
+    alignment_type=ALIGNMENT_TYPES,
+    species=SPECIES
+)
+
+REALIGN = expand(
+    os.path.join(DIR_PROC, '{target}-PE_{species}_realign-{species2}.bam'),
+    target=TARGETS,
+    species=SPECIES,
+    species2=SPECIES
+)
+
+COUNTS_FINAL = expand(
+    os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup_counts.bed.gz'),
+    target=TARGETS,
+    alignment_type=ALIGNMENT_TYPES,
+    species=SPECIES
+)
+
+COMPLEXITY_CURVES = expand(
+    os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup_complexity-curve.txt'),
+    target=TARGETS,
+    alignment_type=ALIGNMENT_TYPES,
+    species=SPECIES
+)
+
+COMPLEXITY_TOTALS = expand(
+    os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup_complexity-total.txt'),
+    target=TARGETS,
+    alignment_type=ALIGNMENT_TYPES,
+    species=SPECIES
+)
+
+FINAL = BAMS_FINAL + COUNTS_FINAL + BIGWIGS + COMPLEXITY_CURVES + COMPLEXITY_TOTALS + REALIGN
+
+CLEAN = BAMS + BAMS_SPECIES_SPLIT + BAMS_FILTERED
+
+wildcard_constraints:
+    species = "|".join(SPECIES)
+
+rule all:
+    input:
+        FINAL
+
+rule clean:
+    params:
+        clean = CLEAN + [DIR_TRIM_R1, DIR_TRIM_PE]
+    shell:
+        '''
+        paths_to_rm=({params.clean:q})
+        for path in "${{paths_to_rm[@]}}"; do
+            if [ -f "$path" ] || [ -d "$path" ]; then
+               rm -r "$path"
+            fi
+        done
+        '''
+
+rule trim_R1:
+    input:
+        os.path.join(DIR_PROC, '{target}_R1.fastq.gz')
+    output:
+        os.path.join(DIR_TRIM_R1, '{target}_R1_trimmed.fq.gz')
+    log:
+        os.path.join(DIR_LOG, '{target}-R1_trim.log')
+    params:
+        dir = DIR_TRIM_R1
+    threads:
+        10
+    conda:
+        conda_env
+    shell:
+        '''
+        if [[ {threads} -gt 8 ]]; then
+            cores=2
+        else
+            cores=1
+        fi
+
+        trim_galore \
+          --gzip \
+          --cores $cores \
+          -o "{params.dir}" \
+          {input:q} &> "{log}"
+        '''
+
+# align trimmed R1 reads to combined human-mouse genome
+# - Flag filtering
+#   - exclude flags (any): 0xB04 (2820)
+#     - read unmapped: 0x4 (4)
+#     - secondary alignment: 0x100 (256)
+#     - not passing filters, such as platform/vendor quality controls: 0x200 (512)
+#     - supplementary (chimeric) alignment: 0x800 (2048)
+# - Mapping quality filtering: at least 20 (1% probability that mapping position is wrong)
+rule align:
+    input:
+        os.path.join(DIR_TRIM_R1, '{target}_R1_trimmed.fq.gz')
+    output:
+        bam = os.path.join(DIR_PROC, '{target}-R1.bam'),
+        stats = os.path.join(DIR_PROC, '{target}-R1.flagstat')
+    log:
+        os.path.join(DIR_LOG, '{target}-R1_align.log')
+    threads:
+        10
+    conda:
+        conda_env
+    shell:
+        '''
+        {{
+            bowtie2 \
+              -p {threads} \
+              -t \
+              --phred33 \
+              -x "{bowtie2_index_combined}" \
+              -U "{input}" |
+            samtools view -@ {threads} -b -q 20 -F 2820 - |
+            samtools sort -@ {threads} -o "{output.bam}"
+
+            samtools flagstat -@ {threads} "{output.bam}" > "{output.stats}"
+        }} &> "{log}"
+        '''
+
+rule trim_paired:
+    input:
+        [os.path.join(DIR_PROC, '{target}_R1.fastq.gz'),
+         os.path.join(DIR_PROC, '{target}_R2.fastq.gz')]
+    output:
+        os.path.join(DIR_TRIM_PE, "{target}_R1_val_1.fq.gz"),
+        os.path.join(DIR_TRIM_PE, "{target}_R2_val_2.fq.gz")
+    log:
+        os.path.join(DIR_LOG, '{target}-PE_trim.log')
+    params:
+        dir = DIR_TRIM_PE
+    threads:
+        10
+    conda:
+        conda_env
+    shell:
+        '''
+        if [[ {threads} -gt 8 ]]; then
+            cores=2
+        else
+            cores=1
+        fi
+
+        trim_galore \
+          --paired \
+          --gzip \
+          --cores $cores \
+          --length 12 \
+          -o "{params.dir}" \
+          {input:q} &> "{log}"
+        '''
+
+# align trimmed R1 and R2 paired reads to combined human-mouse genome
+# - Bowtie 2 parameters
+#   - --maxins 2500: maximum insert size of 2500 bp, instead of default value of 500
+# - Flag filtering
+#   - Required flags: 0x3 (3)
+#     - read paired: 0x1
+#     - mate mapped in proper pair: 0x2
+#   - exclude flags (any): 0xB0C (2828)
+#     - read unmapped: 0x4 (4)
+#     - mate unmapped: 0x8 (8)
+#     - secondary alignment: 0x100 (256)
+#     - not passing filters, such as platform/vendor quality controls: 0x200 (512)
+#     - supplementary (chimeric) alignment: 0x800 (2048)
+# - Mapping quality filtering: at least 20 (1% probability that mapping position is wrong)
+rule align_paired:
+    input:
+        r1 = os.path.join(DIR_TRIM_PE, "{target}_R1_val_1.fq.gz"),
+        r2 = os.path.join(DIR_TRIM_PE, "{target}_R2_val_2.fq.gz")
+    output:
+        bam = os.path.join(DIR_PROC, '{target}-PE.bam'),
+        stats = os.path.join(DIR_PROC, '{target}-PE.flagstat')
+    log:
+        os.path.join(DIR_LOG, '{target}-PE_align.log')
+    conda:
+        conda_env
+    threads:
+        10
+    shell:
+        '''
+        {{
+            bowtie2 \
+              -p {threads} \
+              -t \
+              --phred33 \
+              -x "{bowtie2_index_combined}" \
+              --maxins 2500 \
+              -1 "{input.r1}" \
+              -2 "{input.r2}" |
+            samtools view -@ {threads} -b -q 20 -f 3 -F 2828 - |
+            samtools sort -@ {threads} -o "{output.bam}"
+
+            samtools flagstat -@ {threads} "{output.bam}" > "{output.stats}"
+        }} &> "{log}"
+        '''
+
+rule create_chrom_map:
+    input:
+        os.path.join(DIR_PROC, 'CTCF-R1.bam')
+    output:
+        os.path.join(DIR_AUX, 'chrom_map_{species}.txt')
+    log:
+        os.path.join(DIR_LOG, 'chrom_map_{species}.log')
+    params:
+        species_abbrev = lambda wildcards: wildcards.species[0]
+    conda:
+        conda_env
+    shell:
+        '''
+        {{
+            samtools view -H "{input}" |
+            grep -o -E "@SQ.*SN:{params.species_abbrev}_\S+" |
+            sed -E 's/@SQ.*SN:({params.species_abbrev}_)(\S+)/\\1\\2\\t\\2/' |
+            sort -V > "{output}"
+        }} &> "{log}"
+        '''
+
+rule split_species:
+    input:
+        bam = os.path.join(DIR_PROC, '{target}-{alignment_type}.bam'),
+        chrom_map = os.path.join(DIR_AUX, 'chrom_map_{species}.txt'),
+    output:
+        os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}.bam')
+    log:
+        os.path.join(DIR_LOG, '{target}-{alignment_type}_{species}.log')
+    params:
+        species_abbrev = lambda wildcards: wildcards.species[0]
+    threads:
+        4
+    conda:
+        conda_env
+    shell:
+        '''
+        python "{rename_and_filter_chr}" -c "{input.chrom_map}" -t {threads} \
+          -o "{output}" "{input.bam}" &> "{log}"
+        '''
+
+rule merge_mask:
+    output:
+        temp(os.path.join(DIR_PROC, "mask_merge_{species}.bed"))
+    log:
+        os.path.join(DIR_LOG, 'mask_merge_{species}.log')
+    params:
+        mask_path = lambda wildcards: mask[wildcards.species]
+    conda:
+        conda_env
+    shell:
+        '''
+        {{
+            sort -k1,1 -k2,2n "{params.mask_path}" |
+            bedtools merge > "{output}"
+        }} &> "{log}"
+        '''
+
+# apply ENCODE ChIP blacklists
+# - R1: filter out reads that overlap with blacklisted regions
+# - PE: filter out read pairs that overlap with blacklisted regions
+rule filter_blacklist:
+    input:
+        bam = os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}.bam'),
+        mask = os.path.join(DIR_PROC, "mask_merge_{species}.bed")
+    output:
+        os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered.bam'),
+    log:
+        os.path.join(DIR_LOG, '{target}-{alignment_type}_{species}_filtered.log')
+    params:
+        alignment_type = lambda wildcards: wildcards.alignment_type
+    conda:
+        conda_env
+    shell:
+        '''
+        {{
+            if [ "{params.alignment_type}" = "R1" ]; then
+                bedtools intersect -v -a "{input.bam}" -b "{input.mask}" > "{output}"
+            else
+                samtools collate -@ {threads} -O -u "{input.bam}" |
+                bedtools intersect -v -a - -b "{input.mask}" |
+                python {remove_unpaired} -o "{output}" -
+            fi
+        }} &> "{log}"
+        '''
+
+# Deduplicate and generate counts table (columns = chr, start, end, bead, count)
+rule dedup:
+    input:
+        os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered.bam')
+    output:
+        bam = os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup.bam'),
+        index = os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup.bam.bai'),
+        counts = os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup_counts.bed.gz')
+    log:
+        os.path.join(DIR_LOG, '{target}-{alignment_type}_{species}_filtered_dedup.log')
+    params:
+        paired = lambda wildcards: '-p' if wildcards.alignment_type == 'PE' else ''
+    threads:
+        4
+    conda:
+        conda_env
+    shell:
+        '''
+        {{
+            python {dedup} \
+              -c {output.counts} \
+              {params.paired} \
+              --barcode-rgx '::bead=([0-9]+)' \
+              -t {threads} \
+              "{input}" |
+            samtools sort -@ {threads} -o "{output.bam}"
+
+            samtools index -@ {threads} "{output.bam}" # index for loading into IGV
+
+            # alternative: deduplicate paired reads based on bead, position, and orientation
+            # samtools collate -@ {threads} -O -u "{input}" |
+            # samtools fixmate -@ {threads} -m -u - - |
+            # samtools sort -@ {threads} -u - |
+            # samtools markdup -@ {threads} -r --barcode-rgx '::bead=([0-9]+)' - "{output}"
+
+            # alternative: deduplicate single end reads based on position
+            # samtools markdup -r --barcode-rgx '::bead=([0-9]+)' -@ {threads} "{input}" "{output}"
+        }} &> "{log}"
+        '''
+
+rule estimate_complexity:
+    input:
+        os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup_counts.bed.gz')
+    output:
+        curve = os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup_complexity-curve.txt'),
+        total = os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup_complexity-total.txt')
+    log:
+        os.path.join(DIR_LOG, '{target}-{alignment_type}_{species}_filtered_dedup_complexity-curve.txt')
+    conda:
+        "genomics"
+    shell:
+        '''
+        {{
+            # lc_extrap options
+            # -e: maximum extrapolation
+            # -s: extrapolation step size
+            # -V: input is a text file containing only the observed counts
+            preseq lc_extrap -o "{output.curve}" -e 30000000 -s 100000 \
+              -V <(unpigz -c "{input}" | cut -f 5)
+    
+            preseq pop_size -o "{output.total}" -V <(unpigz -c "{input}" | cut -f 5)
+        }} &> "{log}"
+        '''
+
+rule generate_bigwigs:
+    input:
+        bam = os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup.bam'),
+        index = os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup.bam.bai')
+    output:
+        os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup.bw')
+    log:
+        os.path.join(DIR_LOG, '{target}-{alignment_type}_{species}_filtered_dedup_bigwig.log')
+    conda:
+        conda_env
+    threads:
+        20
+    shell:
+        '''
+        bamCoverage \
+          --binSize 200 \
+          -p {threads} \
+          --bam "{input.bam}" \
+          --outFileName "{output}" &> "{log}"
+        '''
+
+rule sort_name:
+    input:
+        os.path.join(DIR_PROC, '{target}-PE_{species}_filtered_dedup.bam')
+    output:
+        os.path.join(DIR_PROC, '{target}-PE_{species}_filtered_dedup_sort-name.bam')
+    log:
+        os.path.join(DIR_LOG, '{target}-PE_{species}_filtered_dedup_sort-name.log')
+    conda:
+        conda_env
+    threads:
+        4
+    shell:
+        '''
+        samtools sort -@ {threads} -N -o "{output}" "{input}" &> "{log}"
+        '''
+
+rule bam_to_fastq:
+    input:
+        os.path.join(DIR_PROC, '{target}-PE_{species}_filtered_dedup_sort-name.bam')
+    output:
+        r1 = temp(os.path.join(DIR_PROC, '{target}-PE_{species}_filtered_dedup_R1.fq')),
+        r2 = temp(os.path.join(DIR_PROC, '{target}-PE_{species}_filtered_dedup_R2.fq'))
+    log:
+        os.path.join(DIR_LOG, '{target}-PE_{species}_filtered_dedup_to-fastq.log')
+    conda:
+        conda_env
+    threads:
+        4
+    shell:
+        '''
+        samtools fastq -@ {threads} -1 "{output.r1}" -2 "{output.r2}" "{input}" &> "{log}"
+        '''
+
+# Re-align trimmed R1 and R2 paired reads to human genome
+# - Bowtie 2 parameters
+#   - --maxins 2500: maximum insert size of 2500 bp, instead of default value of 500
+# - Flag filtering
+#   - exclude flags (any): 0x900 (2304)
+#     - secondary alignment: 0x100 (256)
+#     - supplementary (chimeric) alignment: 0x800 (2048)
+rule realign_paired:
+    input:
+        r1 = os.path.join(DIR_PROC, '{target}-PE_{species}_filtered_dedup_R1.fq'),
+        r2 = os.path.join(DIR_PROC, '{target}-PE_{species}_filtered_dedup_R2.fq')
+    output:
+        os.path.join(DIR_PROC, '{target}-PE_{species}_realign-{species2}.bam')
+    log:
+        os.path.join(DIR_LOG, '{target}-PE_{species}_realign-{species2}.log')
+    params:
+        bowtie2_index = lambda wildcards: bowtie2_index_human if wildcards.species2 == 'human' else bowtie2_index_mouse
+    conda:
+        conda_env
+    threads:
+        10
+    shell:
+        '''
+        {{
+            bowtie2 \
+              -p {threads} \
+              -t \
+              --phred33 \
+              -x "{params.bowtie2_index}" \
+              --maxins 2500 \
+              -1 "{input.r1}" \
+              -2 "{input.r2}" |
+            samtools view -@ {threads} -b -F 0x900 - |
+            samtools sort -@ {threads} -N -o "{output}"
+        }} &> "{log}"
+        '''
