@@ -1,0 +1,24 @@
+conda_env1: "chipdip"
+conda_env2: "genomics"
+
+# Bowtie 2 indices
+bowtie2_index_combined: "/central/scratch/btyeh/index_hg38_mm10/hg38_mm10"
+bowtie2_index_human: "/central/scratch/btyeh/index_hg38/GRCh38_noalt_as"
+bowtie2_index_mouse: "/central/scratch/btyeh/index_mm10/mm10"
+
+# ENCODE blacklists
+mask_human: "/central/home/btyeh/projects/ref/encode/hg38/blacklist_v3_sorted.bed"
+mask_mouse: "/central/home/btyeh/projects/ref/encode/mm10/blacklist_v2_sorted.bed"
+
+# MEME Suite motif database - see https://meme-suite.org/meme/doc/download.html
+motif_database: "/central/scratch/btyeh/motif_databases"
+
+# indexed complete genome FASTA files
+hg38_FASTA: "/central/scratch/btyeh/genomes/hg38.fa"
+mm10_FASTA: "/central/scratch/btyeh/genomes/mm10.fa"
+
+# genome annotations
+hg38_GTF: "/central/scratch/btyeh/annot/hg38.gtf"
+hg38_GTF_canonical: "/central/scratch/btyeh/annot/hg38_canonical_transcripts.gtf"
+mm10_GTF: "/central/scratch/btyeh/annot/mm10.gtf"
+mm10_GTF_canonical: "/central/scratch/btyeh/annot/mm10_canonical_transcripts.gtf"

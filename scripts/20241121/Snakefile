@@ -1,12 +1,14 @@
 workdir: "/central/groups/guttman/btyeh/scBarcode/data_proc/20241121"
 configfile: "config.yaml"
 
+# assumes the following software is installed on the system, not in a conda environment
+# - homer
+
 # assumes there exist 2 conda environments
-# - one specifed by the 'conda_env' in the config file
-#   - Must contain samtools, bowtie2, trim_galore, bedtools, pysam
+# - conda_env1: samtools, bowtie2, trim_galore, bedtools, pysam, deeptools
 #   - Example: "chipdip" environment from the ChIP-DIP pipeline
-# - "genomics"
-#   - Must contain preseq
+# - conda_env2: preseq, meme (sea)
+#   - Example: "genomics" environment
 
 ##############################################################################
 # Load required settings
@@ -15,8 +17,16 @@ configfile: "config.yaml"
 bowtie2_index_combined = config.get("bowtie2_index_combined")
 bowtie2_index_human = config.get("bowtie2_index_human")
 bowtie2_index_mouse = config.get("bowtie2_index_mouse")
-conda_env = config.get("conda_env")
+conda_env1 = config.get("conda_env1")
+conda_env2 = config.get("conda_env2")
 mask = dict(human=config.get("mask_human"), mouse=config.get("mask_mouse"))
+motif_database = config.get("motif_database")
+hg38_FASTA = config.get("hg38_FASTA")
+mm10_FASTA = config.get("mm10_FASTA")
+hg38_GTF = config.get("hg38_GTF")
+hg38_GTF_canonical = config.get("hg38_GTF_canonical")
+mm10_GTF = config.get("mm10_GTF")
+mm10_GTF_canonical = config.get("mm10_GTF_canonical")
 
 ##############################################################################
 # Constants
@@ -120,7 +130,41 @@ COMPLEXITY_TOTALS = expand(
     species=SPECIES
 )
 
-FINAL = BAMS_FINAL + COUNTS_FINAL + BIGWIGS + COMPLEXITY_CURVES + COMPLEXITY_TOTALS + REALIGN
+HOMER_TAGDIR = expand(
+    os.path.join(DIR_PROC, '{target}_{species}_tagdir-{format}', 'tagInfo.txt'),
+    target=TARGETS,
+    species=SPECIES,
+    format=['BED', 'BAM']
+)
+
+HOMER_PEAKS = expand(
+    os.path.join(DIR_PROC, '{target}_{species}_tagdir-{format}', 'peaks.bed'),
+    target=TARGETS,
+    species=SPECIES,
+    format=['BED', 'BAM']
+)
+
+HOMER_MOTIFS = expand(
+    os.path.join(DIR_RESULTS, '{target}_{species}_homer-motifs-{format}', 'knownResults.html'),
+    target=TARGETS,
+    species=SPECIES,
+    format=['BED', 'BAM']
+)
+
+XSTREME = expand(
+    os.path.join(DIR_RESULTS, '{target}_{species}-{format}_XSTREME', 'xstreme.html'),
+    target=TARGETS,
+    species=SPECIES,
+    format=['BED', 'BAM']
+)
+
+PROFILES = expand(
+    os.path.join(DIR_RESULTS, 'profile-{region} {species}.png'),
+    species=SPECIES,
+    region=['TSS', 'scaled-gene']
+)
+
+FINAL = BAMS_FINAL + COUNTS_FINAL + BIGWIGS + COMPLEXITY_CURVES + COMPLEXITY_TOTALS + REALIGN + HOMER_MOTIFS + XSTREME + PROFILES
 
 CLEAN = BAMS + BAMS_SPECIES_SPLIT + BAMS_FILTERED
 
@@ -156,7 +200,7 @@ rule trim_R1:
     threads:
         10
     conda:
-        conda_env
+        conda_env1
     shell:
         '''
         if [[ {threads} -gt 8 ]]; then
@@ -191,7 +235,7 @@ rule align:
     threads:
         10
     conda:
-        conda_env
+        conda_env1
     shell:
         '''
         {{
@@ -222,7 +266,7 @@ rule trim_paired:
     threads:
         10
     conda:
-        conda_env
+        conda_env1
     shell:
         '''
         if [[ {threads} -gt 8 ]]; then
@@ -264,7 +308,7 @@ rule align_paired:
     log:
         os.path.join(DIR_LOG, '{target}-PE_align.log')
     conda:
-        conda_env
+        conda_env1
     threads:
         10
     shell:
@@ -295,7 +339,7 @@ rule create_chrom_map:
     params:
         species_abbrev = lambda wildcards: wildcards.species[0]
     conda:
-        conda_env
+        conda_env1
     shell:
         '''
         {{
@@ -319,7 +363,7 @@ rule split_species:
     threads:
         4
     conda:
-        conda_env
+        conda_env1
     shell:
         '''
         python "{rename_and_filter_chr}" -c "{input.chrom_map}" -t {threads} \
@@ -334,7 +378,7 @@ rule merge_mask:
     params:
         mask_path = lambda wildcards: mask[wildcards.species]
     conda:
-        conda_env
+        conda_env1
     shell:
         '''
         {{
@@ -357,7 +401,7 @@ rule filter_blacklist:
     params:
         alignment_type = lambda wildcards: wildcards.alignment_type
     conda:
-        conda_env
+        conda_env1
     shell:
         '''
         {{
@@ -386,7 +430,7 @@ rule dedup:
     threads:
         4
     conda:
-        conda_env
+        conda_env1
     shell:
         '''
         {{
@@ -420,7 +464,7 @@ rule estimate_complexity:
     log:
         os.path.join(DIR_LOG, '{target}-{alignment_type}_{species}_filtered_dedup_complexity-curve.txt')
     conda:
-        "genomics"
+        conda_env2
     shell:
         '''
         {{
@@ -444,7 +488,7 @@ rule generate_bigwigs:
     log:
         os.path.join(DIR_LOG, '{target}-{alignment_type}_{species}_filtered_dedup_bigwig.log')
     conda:
-        conda_env
+        conda_env1
     threads:
         20
     shell:
@@ -464,7 +508,7 @@ rule sort_name:
     log:
         os.path.join(DIR_LOG, '{target}-PE_{species}_filtered_dedup_sort-name.log')
     conda:
-        conda_env
+        conda_env1
     threads:
         4
     shell:
@@ -481,7 +525,7 @@ rule bam_to_fastq:
     log:
         os.path.join(DIR_LOG, '{target}-PE_{species}_filtered_dedup_to-fastq.log')
     conda:
-        conda_env
+        conda_env1
     threads:
         4
     shell:
@@ -507,7 +551,7 @@ rule realign_paired:
     params:
         bowtie2_index = lambda wildcards: bowtie2_index_human if wildcards.species2 == 'human' else bowtie2_index_mouse
     conda:
-        conda_env
+        conda_env1
     threads:
         10
     shell:
@@ -523,5 +567,219 @@ rule realign_paired:
               -2 "{input.r2}" |
             samtools view -@ {threads} -b -F 0x900 - |
             samtools sort -@ {threads} -N -o "{output}"
+        }} &> "{log}"
+        '''
+
+rule bed_counts_to_bed:
+    input:
+        os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup_counts.bed.gz')
+    output:
+        temp(os.path.join(DIR_PROC, '{target}-{alignment_type}_{species}_filtered_dedup.bed'))
+    shell:
+        '''
+        unpigz -c "{input}" |
+        cut -f 1,2,3 > "{output}"
+        '''
+
+rule homer_makeTagDirectory_fromBED:
+    input:
+        os.path.join(DIR_PROC, '{target}-PE_{species}_filtered_dedup.bed')
+    output:
+        os.path.join(DIR_PROC, '{target}_{species}_tagdir-BED', 'tagInfo.txt')
+    log:
+        os.path.join(DIR_LOG, 'homer-tagdir-BED_{target}_{species}.log')
+    params:
+        directory = lambda wildcards: os.path.join(DIR_PROC, f'{wildcards.target}_{wildcards.species}_tagdir-BED'),
+        genome = lambda wildcards: {'human': 'hg38', 'mouse': 'mm10'}[wildcards.species]
+    shell:
+        '''
+        makeTagDirectory "{params.directory}" -genome {params.genome} -checkGC "{input}" &> "{log}"
+        '''
+
+rule homer_makeTagDirectory_fromBAM:
+    input:
+        os.path.join(DIR_PROC, '{target}-PE_{species}_filtered_dedup.bam')
+    output:
+        os.path.join(DIR_PROC, '{target}_{species}_tagdir-BAM', 'tagInfo.txt')
+    log:
+        os.path.join(DIR_LOG, 'homer-tagdir-BAM_{target}_{species}.log')
+    params:
+        directory = lambda wildcards: os.path.join(DIR_PROC, f'{wildcards.target}_{wildcards.species}_tagdir-BAM'),
+        genome = lambda wildcards: {'human': 'hg38', 'mouse': 'mm10'}[wildcards.species]
+    conda:
+        conda_env1
+    shell:
+        '''
+        makeTagDirectory "{params.directory}" -genome {params.genome} -checkGC "{input}" &> "{log}"
+        '''
+
+# columns of the output BED file
+# - chr
+# - start
+# - end
+# - name
+# - Normalized Tag Count
+# - strand
+rule homer_findPeaks:
+    input:
+        os.path.join(DIR_PROC, '{target}_{species}_tagdir-{format}', 'tagInfo.txt')
+    output:
+        peaks = os.path.join(DIR_PROC, '{target}_{species}_tagdir-{format}', 'peaks.txt'),
+        bed = os.path.join(DIR_PROC, '{target}_{species}_tagdir-{format}', 'peaks.bed')
+    log:
+        os.path.join(DIR_LOG, 'homer-findPeaks-{format}_{target}_{species}.log')
+    params:
+        directory = lambda wildcards: os.path.join(DIR_PROC, f'{wildcards.target}_{wildcards.species}_tagdir-{wildcards.format}'),
+        style = lambda wildcards: {'CTCF': 'factor', 'H3K4me3': 'histone'}[wildcards.target]
+    shell:
+        '''
+        {{
+            findPeaks "{params.directory}" -style {params.style} -o "{output.peaks}"
+            pos2bed.pl "{output.peaks}" > "{output.bed}"
+        }} &> "{log}"
+        '''
+
+rule homer_motifs:
+    input:
+        os.path.join(DIR_PROC, '{target}_{species}_tagdir-{format}', 'peaks.txt')
+    output:
+        os.path.join(DIR_RESULTS, '{target}_{species}_homer-motifs-{format}', 'knownResults.html')
+    log:
+        os.path.join(DIR_LOG, 'homer-motifs-{format}_{target}_{species}.log')
+    params:
+        directory = lambda wildcards: os.path.join(DIR_RESULTS, f'{wildcards.target}_{wildcards.species}_homer-motifs-{wildcards.format}'),
+        genome = lambda wildcards: {'human': 'hg38', 'mouse': 'mm10'}[wildcards.species]
+    threads:
+        10
+    shell:
+        '''
+        findMotifsGenome.pl "{input}" {params.genome} "{params.directory}" -size 200 -p {threads} &> "{log}"
+        '''
+
+rule bed_to_fasta:
+    input:
+        os.path.join(DIR_PROC, '{target}_{species}_tagdir-{format}', 'peaks.bed')
+    output:
+        temp(os.path.join(DIR_PROC, '{target}_{species}_tagdir-{format}', 'peaks.fasta'))
+    log:
+        os.path.join(DIR_LOG, 'bed2fasta_{target}_{species}-{format}.log')
+    params:
+        genome_file = lambda wildcards: {
+            'human': hg38_FASTA,
+            'mouse': mm10_FASTA
+        }[wildcards.species]
+    conda:
+        conda_env2
+    shell:
+        '''
+        bed2fasta -o "{output}" "{input}" "{params.genome_file}" &> "{log}"
+        '''
+
+rule motif_enrichment_XSTREME:
+    input:
+        os.path.join(DIR_PROC, '{target}_{species}_tagdir-{format}', 'peaks.fasta')
+    output:
+        os.path.join(DIR_RESULTS, '{target}_{species}-{format}_XSTREME', 'xstreme.html')
+    log:
+        os.path.join(DIR_LOG, '{target}_{species}-{format}_XSTREME.log')
+    params:
+        outdir = os.path.join(DIR_RESULTS, '{target}_{species}-{format}_XSTREME')
+    conda:
+        conda_env2
+    threads:
+        8
+    shell:
+        '''
+        {{
+            xstreme --p "{input}" \
+              --m "{motif_database}"/HOCOMOCO/H12CORE_meme_format.meme \
+              --m "{motif_database}"/JASPAR/JASPAR2022_CORE_vertebrates_non-redundant_v2.meme \
+              --oc "{params.outdir}" \
+              --dna \
+              --seed 0 \
+              --meme-p {threads}
+        }} &> "{log}"
+        '''
+
+rule computeMatrix_scaled_gene:
+    input:
+        CTCF = os.path.join(DIR_PROC, 'CTCF-PE_{species}_filtered_dedup.bw'),
+        H3K4me3 = os.path.join(DIR_PROC, 'H3K4me3-PE_{species}_filtered_dedup.bw')
+    output:
+        os.path.join(DIR_PROC, '{species}_matrix-scaled-gene.gz')
+    log:
+        os.path.join(DIR_LOG, '{species}_matrix-scaled-gene.log')
+    params:
+        all = lambda wildcards: hg38_GTF if wildcards.species == 'human' else mm10_GTF,
+        canonical = lambda wildcards: hg38_GTF_canonical if wildcards.species == 'human' else mm10_GTF_canonical,
+        label = lambda wildcards: [f'{wildcards.species} CTCF', f'{wildcards.species} H3K4me3']
+    conda:
+        conda_env1
+    threads:
+        8
+    shell:
+        '''
+        {{
+            computeMatrix scale-regions \
+              -R "{params.all}" "{params.canonical}" \
+              -S "{input.CTCF}" "{input.H3K4me3}" \
+              -out "{output}" \
+              --upstream 1000 --downstream 1000 \
+              --regionBodyLength 2500 \
+              --unscaled5prime 50 \
+              --samplesLabel {params.label:q} \
+              -p {threads}
+        }} &> "{log}"
+        '''
+
+rule computeMatrix_TSS:
+    input:
+        CTCF = os.path.join(DIR_PROC, 'CTCF-PE_{species}_filtered_dedup.bw'),
+        H3K4me3 = os.path.join(DIR_PROC, 'H3K4me3-PE_{species}_filtered_dedup.bw')
+    output:
+        os.path.join(DIR_PROC, '{species}_matrix-TSS.gz')
+    log:
+        os.path.join(DIR_LOG, '{species}_matrix-TSS.log')
+    params:
+        all = lambda wildcards: hg38_GTF if wildcards.species == 'human' else mm10_GTF,
+        canonical = lambda wildcards: hg38_GTF_canonical if wildcards.species == 'human' else mm10_GTF_canonical,
+        label = lambda wildcards: [f'{wildcards.species} CTCF', f'{wildcards.species} H3K4me3']
+    conda:
+        conda_env1
+    threads:
+        8
+    shell:
+        '''
+        {{
+            computeMatrix reference-point \
+              -R "{params.all}" "{params.canonical}" \
+              -S "{input.CTCF}" "{input.H3K4me3}" \
+              -out "{output}" \
+              --referencePoint TSS \
+              --upstream 1500 \
+              --downstream 1500 \
+              --samplesLabel {params.label:q} \
+              -p {threads}
+        }} &> "{log}"
+        '''
+
+rule plotProfile:
+    input:
+        os.path.join(DIR_PROC, '{species}_matrix-{region}.gz')
+    output:
+        os.path.join(DIR_RESULTS, 'profile-{region} {species}.png')
+    log:
+        os.path.join(DIR_LOG, '{species}_plotProfile-{region}.log')
+    conda:
+        conda_env1
+    shell:
+        '''
+        {{
+            plotProfile -m "{input}" \
+              -o "{output}" \
+              --dpi 300 \
+              -out "{output}" \
+              --numPlotsPerRow 2 \
+              --colors '#1f77b4' '#ff7f0e'
         }} &> "{log}"
         '''

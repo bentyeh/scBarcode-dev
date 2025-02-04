@@ -1,0 +1,52 @@
+__default__:
+    time: "12:00:00"
+    mem: 20g
+    cpus: 1
+    nodes: 1
+    output: "log/cluster/{rule}.{wildcards}.out"
+    error: "log/cluster/{rule}.{wildcards}.err"
+trim_R1:
+    mem: 10g
+    cpus: 10
+align:
+    mem: 20g
+    cpus: 10
+trim_paired:
+    mem: 10g
+    cpus: 10
+align_paired:
+    mem: 20g
+    cpus: 10
+split_species:
+    mem: 10g
+    cpus: 4
+filter_blacklist:
+    mem: 10g
+    cpus: 4
+dedup:
+    mem: 32g
+    cpus: 4
+generate_bigwigs:
+    mem: 40g
+    cpus: 20
+sort_name:
+    mem: 10g
+    cpus: 4
+realign_paired:
+    mem: 20g
+    cpus: 10
+homer_motifs:
+    mem: 32g
+    cpus: 10
+motif_enrichment_XSTREME:
+    time: "24:00:00"
+    mem: 32g
+    cpus: 8
+computeMatrix_scaled_gene:
+    cpus: 8
+computeMatrix_TSS:
+    cpus: 8
+# fastq_to_fasta:
+#     time: "01:00:00"
+#     mem: 4g
+#     cpus: 4
